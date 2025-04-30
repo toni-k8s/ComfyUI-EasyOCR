@@ -94,17 +94,12 @@ def plot_boxes_to_image(image_pil, tgt):
     H, W = tgt["size"]
     result = tgt["result"]
 
-    res_mask = []
-    res_image = []
-
     box_color = (255, 0, 0)  # Red color for the box
     text_color = (255, 255, 255)  # White color for the text
 
     draw = ImageDraw.Draw(image_pil)
 
-    # Get the current file path and use it to create a relative path to the font file
-    current_file_path = os.path.dirname(os.path.abspath(__file__))
-    font_path = os.path.join(current_file_path, "docs", "PingFang Regular.ttf")
+    font_path = r"/root/autodl-tmp/ComfyUI/custom_nodes/comfyui-easyocr/docs/PingFangRegular.ttf"
     font_size = 20
     font = ImageFont.truetype(font_path, font_size)
 
@@ -118,6 +113,9 @@ def plot_boxes_to_image(image_pil, tgt):
         "imageWidth": W,
     }
 
+    # 初始化一个全零的单一遮罩
+    merged_mask = np.zeros((H, W, 1), dtype=np.uint8)
+
     for item in result:
         formatted_points, label, threshold = item
 
@@ -128,56 +126,37 @@ def plot_boxes_to_image(image_pil, tgt):
         x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
         points = [[x1, y1], [x2, y2]]
 
-        # Save labelme json
+        # 保存 labelme 标注
         shape = {
             "label": label,
             "points": points,
             "group_id": None,
             "shape_type": "rectangle",
             "flags": {},
+            "threshold": str(threshold)
         }
         labelme_data["shapes"].append(shape)
 
-        # Change label
-        label = label + ":" + str(threshold)
-        shape["threshold"] = str(threshold)
-
-        # Draw rectangle on the image using PIL
+        # 绘制图像中的框与文字
         draw.rectangle([(x1, y1), (x2, y2)], outline=box_color, width=3)
-
-        # Draw label on the image using PIL
         text_bbox = draw.textbbox((x1, y1), label, font=font)
         text_width = text_bbox[2] - text_bbox[0]
         text_height = text_bbox[3] - text_bbox[1]
+        draw.rectangle([(x1, y1 - text_height - 10), (x1 + text_width, y1)], fill=box_color)
+        draw.text((x1, y1 - text_height - 10), f"{label}:{threshold}", font=font, fill=text_color)
 
-        label_ymin = max(y1, text_height + 10)
-        draw.rectangle(
-            [(x1, y1 - text_height - 10), (x1 + text_width, y1)], fill=box_color
-        )
-        draw.text((x1, y1 - text_height - 10), label, font=font, fill=text_color)
+        # 在 merged_mask 中叠加矩形区域
+        cv2.rectangle(merged_mask, (x1, y1), (x2, y2), (255,), thickness=-1)
 
-        # Draw mask
-        mask = np.zeros((H, W, 1), dtype=np.uint8)
-        cv2.rectangle(mask, (int(x1), int(y1)), (int(x2), int(y2)), (255, 255, 255), -1)
-        mask_tensor = torch.from_numpy(mask).permute(2, 0, 1).float() / 255.0
-        res_mask.append(mask_tensor)
+    # 将 merged_mask 转为 tensor 格式
+    mask_tensor = torch.from_numpy(merged_mask).permute(2, 0, 1).float() / 255.0
 
-    if len(res_mask) == 0:
-        mask = np.zeros((H, W, 1), dtype=np.uint8)
-        mask_tensor = torch.from_numpy(mask).permute(2, 0, 1).float() / 255.0
-        res_mask.append(mask_tensor)
-
-    # Convert the PIL image back to a numpy array
+    # 图像处理
     image_with_boxes = np.array(image_pil)
-
-    # Convert the modified image to a torch tensor
-    image_with_boxes_tensor = torch.from_numpy(
-        image_with_boxes.astype(np.float32) / 255.0
-    )
+    image_with_boxes_tensor = torch.from_numpy(image_with_boxes.astype(np.float32) / 255.0)
     image_with_boxes_tensor = torch.unsqueeze(image_with_boxes_tensor, 0)
-    res_image.append(image_with_boxes_tensor)
 
-    return res_image, res_mask, labelme_data
+    return [image_with_boxes_tensor], [mask_tensor], labelme_data
 
 
 class ApplyEasyOCR:
